@@ -12,7 +12,7 @@ import re
 import shutil
 
 config = {
-    'game_path': '',
+    'game_path': '/mnt/d/World_of_Tanks/World_of_Tanks_EU/',
     'client_mod_path': 'scripts/client/gui/mods'
 }
 
@@ -71,7 +71,7 @@ class ModDeploy:
 
         for directory in self._mods_location.glob("*"):
             if directory.is_dir() and not str(directory.name).startswith('.'):
-                for file in dir.glob("*.py"):
+                for file in directory.glob("*.py"):
                     if file.name.startswith("mod_"):
                         pyc = self._compile_mod(str(file.resolve()))
                         self._deploy_mod(pyc)
