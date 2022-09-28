@@ -1,5 +1,6 @@
 import sqlite3
 import time
+import datetime
 
 try:
     import Avatar
@@ -108,12 +109,12 @@ class GameStateBase(GameStates):
     def _start(self):
         if self._start_time > 0:
             return
-        self._start_time = time.time()
+        self._start_time = int(time.time() * 1000)
 
     def _stop(self):
         if self._stop_time > 0:
             return
-        self._stop_time = time.time()
+        self._stop_time = int(time.time() * 1000)
 
     def _bad_state_exception(self, method_name, class_name):
         raise BadStateException("State not allowed, class={}, method={} ".format(str(class_name), str(method_name)))
@@ -215,6 +216,39 @@ class ClientLoadingState(GameStateBase):
 
 
 class Database:
+    class DataRow:
+        STATE_LOADING = 'LOADING'
+        STATE_LOBBY = 'LOBBY'
+        STATE_ARENA = 'ARENA'
+
+        def __init__(self, table_row):
+            self.wot_trace_id = table_row[0]
+            self.date = str(table_row[1]).encode('utf-8')
+            self.duration = table_row[2]
+            self.game_state = str(table_row[3]).encode('utf-8')
+            self.param1 = table_row[4]
+            self.param2 = table_row[5]
+            self.param3 = table_row[6]
+            self.param4 = table_row[7]
+
+        def __repr__(self):
+            return "{}/{}/{}/{}".format(self.wot_trace_id, self.date, self.game_state, self.duration)
+
+        @staticmethod
+        def create_query():
+            query = """CREATE TABLE {} (
+wot_trace_id INTEGER PRIMARY KEY,
+date TEXT NOT NULL,
+duration REAL NOT NULL,
+game_state TEXT NOT NULL,
+param1 TEXT,
+param2 TEXT,
+param3 TEXT,
+param4 TEXT
+)
+""".format(Database.TABLE_NAME)
+            return query
+
     TABLE_NAME = "WOT_GAME_TIME"
 
     def __init__(self, file_name="database.db"):
@@ -254,17 +288,7 @@ class Database:
         return is_table_exists['result']
 
     def _create_wot_table(self):
-        query = """CREATE TABLE {} (
-	wot_trace_id INTEGER PRIMARY KEY,
-	date TEXT NOT NULL,
-	duration REAL NOT NULL,
-	game_state TEXT NOT NULL,
-	param1 TEXT,
-	param2 TEXT,
-	param3 TEXT,
-	param4 TEXT
-)
-""".format(Database.TABLE_NAME)
+        query = Database.DataRow.create_query()
         self._execute_on_db(query, None)
 
     def load_data(self):
@@ -276,14 +300,87 @@ class Database:
         data = []
 
         def data_ready(result):
-            fetch = result.fetchone()
-            print(fetch)
-            if fetch is None:
-                return
+            fetch = result.fetchall()
             for row in fetch:
-                data.append(row)
-                print(row)
+                data.append(Database.DataRow(row))
         self._execute_on_db(query, data_ready)
+        return data
+
+
+class HistoricStats:
+    def __init__(self, data):
+        self._data = data
+        self.all_time_avg_time_spent = 0
+
+        self.all_time_avg_game_loading = 0
+        self.all_time_loading_counter = 0
+
+        self.all_time_avg_game_lobby = 0
+        self.all_time_lobby_counter = 0
+
+        self.all_time_avg_game_arena = 0
+        self.all_time_arena_counter = 0
+
+        self.curr_month_avg_time_spent = 0
+        self.curr_month_counter = 0
+
+        self.curr_month_avg_game_loading = 0
+        self.curr_month_loading_counter = 0
+
+        self.curr_month_avg_game_lobby = 0
+        self.curr_month_lobby_counter = 0
+
+        self.curr_month_avg_game_arena = 0
+        self.curr_month_arena_counter = 0
+        self._calculate_stats()
+
+    @staticmethod
+    def _get_date(row_date):
+        date = datetime.datetime.fromtimestamp(int(row_date)/1000)
+        return date
+
+    def _calculate_stats(self):
+        for row in self._data:
+            self.all_time_avg_time_spent += row.duration
+            if row.game_state == Database.DataRow.STATE_LOADING:
+                self.all_time_avg_game_loading += row.duration
+                self.all_time_loading_counter += 1
+            if row.game_state == Database.DataRow.STATE_LOBBY:
+                self.all_time_avg_game_lobby += row.duration
+                self.all_time_lobby_counter += 1
+            if row.game_state == Database.DataRow.STATE_ARENA:
+                self.all_time_avg_game_arena += row.duration
+                self.all_time_arena_counter += 1
+            date = HistoricStats._get_date(row.date)
+            if date.year == datetime.datetime.now().year and \
+               date.month == datetime.datetime.now().month:
+                self.curr_month_avg_time_spent += row.duration
+                self.curr_month_counter += 1
+                if row.game_state == Database.DataRow.STATE_LOADING:
+                    self.curr_month_avg_game_loading += row.duration
+                    self.curr_month_loading_counter += 1
+                if row.game_state == Database.DataRow.STATE_LOBBY:
+                    self.curr_month_avg_game_lobby += row.duration
+                    self.curr_month_lobby_counter += 1
+                if row.game_state == Database.DataRow.STATE_ARENA:
+                    self.curr_month_avg_game_arena += row.duration
+                    self.curr_month_arena_counter += 1
+        if len(self._data) > 0:
+            self.all_time_avg_time_spent = self.all_time_avg_time_spent / len(self._data)
+            if self.all_time_loading_counter > 0:
+                self.all_time_avg_game_loading = self.all_time_avg_game_loading / self.all_time_loading_counter
+            if self.all_time_lobby_counter > 0:
+                self.all_time_avg_game_lobby = self.all_time_avg_game_lobby / self.all_time_lobby_counter
+            if self.all_time_arena_counter > 0:
+                self.all_time_avg_game_arena = self.all_time_avg_game_arena / self.all_time_arena_counter
+            if self.curr_month_counter > 0:
+                self.curr_month_avg_time_spent = self.curr_month_avg_time_spent / self.curr_month_counter
+            if self.curr_month_loading_counter > 0:
+                self.curr_month_avg_game_loading = self.curr_month_avg_game_loading / self.curr_month_loading_counter
+            if self.curr_month_lobby_counter > 0:
+                self.curr_month_avg_game_lobby = self.curr_month_avg_game_lobby / self.curr_month_lobby_counter
+            if self.curr_month_arena_counter > 0:
+                self.curr_month_avg_game_arena = self.curr_month_avg_game_arena / self.curr_month_arena_counter
 
 
 class InGameTimeSpentMod(GameStates, Context):
@@ -294,6 +391,7 @@ class InGameTimeSpentMod(GameStates, Context):
         init_state = ClientLoadingState(self)
         self._state = init_state
         self._state_history_cache = set()
+        self._historic_stats = HistoricStats(Database().load_data())
 
     def dump(self):
         for state in self._state_history_cache:
@@ -332,8 +430,14 @@ def main():
     ingame_mod.on_exit()
     ingame_mod.dump()
 
-    database = Database()
-    database.load_data()
+    print(ingame_mod._historic_stats.all_time_avg_time_spent)
+    print(ingame_mod._historic_stats.all_time_avg_game_loading)
+    print(ingame_mod._historic_stats.all_time_avg_game_lobby)
+    print(ingame_mod._historic_stats.all_time_avg_game_arena)
+    print(ingame_mod._historic_stats.curr_month_avg_time_spent)
+    print(ingame_mod._historic_stats.curr_month_avg_game_loading)
+    print(ingame_mod._historic_stats.curr_month_avg_game_lobby)
+    print(ingame_mod._historic_stats.curr_month_avg_game_arena)
 
 
 if __name__ == "__main__":
