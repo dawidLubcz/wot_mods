@@ -76,6 +76,13 @@ class BadStateException(Exception):
 
 
 class GameStates:
+    class Names:
+        BASE = "STATE_BASE"
+        CLIENT_LOADING = "STATE_CLIENT_LOADING"
+        LOBBY_LOADED = "STATE_LOBBY_LOADED"
+        ARENA_LOADED = "STATE_ARENA_LOADED"
+
+
     def on_client_started(self):
         raise NotImplementedError()
 
@@ -86,6 +93,7 @@ class GameStates:
         raise NotImplementedError()
 
     def on_veh_destroyed(self):
+        """Not supported so far"""
         raise NotImplementedError()
 
 
@@ -97,30 +105,65 @@ class Context:
         raise NotImplementedError()
 
 
+class StateData:
+    def __init__(self):
+        self._start_timestamp = 0
+        self._stop_timestamp = 0
+        self._state_name = GameStates.Names.BASE
+
+    @property
+    def start_timestamp(self):
+        return self._start_timestamp
+
+    @start_timestamp.setter
+    def start_timestamp(self, value):
+        self._start_timestamp = value
+
+    @property
+    def stop_timestamp(self):
+        return self._stop_timestamp
+
+    @stop_timestamp.setter
+    def stop_timestamp(self, value):
+        self._stop_timestamp = value
+
+    @property
+    def state_name(self):
+        return self._state_name
+
+    @state_name.setter
+    def state_name(self, value):
+        self.state_name = value
+
+
 class GameStateBase(GameStates):
+    STATE_NAME = GameStates.Names.BASE
+
     def __init__(self, context):
-        self._start_time = 0
-        self._stop_time = 0
+        self._state_data = StateData()
         self._context = context
 
     def __repr__(self):
-        return "{}: start={} stop={}".format(self.__class__.__name__, self._start_time, self._stop_time)
+        return "{}: start={} stop={}".format(self.__class__.__name__,
+                                             self._state_data.start_timestamp,
+                                             self._state_data.stop_timestamp)
 
     def _start(self):
-        if self._start_time > 0:
+        if self._state_data.start_timestamp > 0:
             return
-        self._start_time = int(time.time() * 1000)
+        self._state_data.start_timestamp = int(time.time() * 1000)
 
     def _stop(self):
-        if self._stop_time > 0:
+        if self._state_data.stop_timestamp > 0:
             return
-        self._stop_time = int(time.time() * 1000)
+        self._state_data.stop_timestamp = int(time.time() * 1000)
 
     def _bad_state_exception(self, method_name, class_name):
         raise BadStateException("State not allowed, class={}, method={} ".format(str(class_name), str(method_name)))
 
-    def save_to_db(self):
-        raise NotImplementedError()
+    def get_state_data(self):
+        self._state_data.state_name = self.STATE_NAME
+        return self._state_data
 
     def save_to_cache(self):
         self._context.save_state(self)
@@ -149,16 +192,15 @@ class GameStateBase(GameStates):
 
 
 class ArenaLoadedState(GameStateBase):
+    STATE_NAME = GameStates.Names.ARENA_LOADED
+
     def __init__(self, context):
         GameStateBase.__init__(self, context)
         self._veh_destroyed_timestamp = 0
 
-    def save_to_db(self):
-        pass
-
     def _stop(self):
         GameStateBase._stop(self)
-        self._veh_destroyed_timestamp = self._stop_time
+        self._veh_destroyed_timestamp = self._state_data.stop_timestamp
 
     def on_client_started(self):
         self._bad_state_exception(method_name="on_client_started", class_name="ArenaLoadedState")
@@ -176,11 +218,10 @@ class ArenaLoadedState(GameStateBase):
 
 
 class LobbyLoadedState(GameStateBase):
+    STATE_NAME = GameStates.Names.LOBBY_LOADED
+
     def __init__(self, context):
         GameStateBase.__init__(self, context)
-
-    def save_to_db(self):
-        pass
 
     def on_client_started(self):
         self._bad_state_exception(method_name="on_client_started", class_name="LobbyLoadedState")
@@ -196,11 +237,10 @@ class LobbyLoadedState(GameStateBase):
 
 
 class ClientLoadingState(GameStateBase):
+    STATE_NAME = GameStates.Names.CLIENT_LOADING
+
     def __init__(self, context):
         GameStateBase.__init__(self, context)
-
-    def save_to_db(self):
-        pass
 
     def on_client_started(self):
         self._start()
@@ -231,22 +271,26 @@ class Database:
             self.param3 = table_row[6]
             self.param4 = table_row[7]
 
+        def insert_row_query(self):
+            return '({}, {}, "{}", "{}", "{}", "{}", "{}")'.format(
+                self.date, self.duration, self.game_state, self.param1, self.param2, self.param3, self.param4)
+
         def __repr__(self):
             return "{}/{}/{}/{}".format(self.wot_trace_id, self.date, self.game_state, self.duration)
 
         @staticmethod
         def create_query():
             query = """CREATE TABLE {} (
-wot_trace_id INTEGER PRIMARY KEY,
-date TEXT NOT NULL,
-duration REAL NOT NULL,
-game_state TEXT NOT NULL,
-param1 TEXT,
-param2 TEXT,
-param3 TEXT,
-param4 TEXT
-)
-""".format(Database.TABLE_NAME)
+                    wot_trace_id INTEGER PRIMARY KEY,
+                    date TEXT NOT NULL,
+                    duration REAL NOT NULL,
+                    game_state TEXT NOT NULL,
+                    param1 TEXT,
+                    param2 TEXT,
+                    param3 TEXT,
+                    param4 TEXT
+                    )
+                    """.format(Database.TABLE_NAME)
             return query
 
     TABLE_NAME = "WOT_GAME_TIME"
@@ -260,13 +304,13 @@ param4 TEXT
         cursor = connection.cursor()
         return cursor, connection
 
-    def _execute_on_db(self, query, callback):
+    def _execute_on_db(self, query, callback=None):
         cursor, connection = self._connect()
         try:
             print("DB: {}".format(query))
             result = cursor.execute(query)
             if callback:
-                callback(result)
+                callback(connection=connection, result=result)
         except Exception as e:
             print("Database->_check_table(): Failed to fetch data from {}, msg: {}".format(self._file_name, e))
         finally:
@@ -277,7 +321,7 @@ param4 TEXT
             'result': False
         }
 
-        def on_result_ready(result):
+        def on_result_ready(connection, result):
             if result.fetchone() is not None:
                 is_table_exists['result'] = True
 
@@ -299,12 +343,41 @@ param4 TEXT
         query = "SELECT * FROM {}".format(Database.TABLE_NAME)
         data = []
 
-        def data_ready(result):
+        def data_ready(connection, result):
             fetch = result.fetchall()
             for row in fetch:
                 data.append(Database.DataRow(row))
         self._execute_on_db(query, data_ready)
         return data
+
+    @staticmethod
+    def game_state_data_to_table_row(game_state_data):
+        row = [-1,
+               game_state_data.start_timestamp,
+               game_state_data.stop_timestamp - game_state_data.start_timestamp,
+               game_state_data.state_name,
+               "param1",
+               "param2",
+               "param3",
+               "param4"
+               ]
+        return Database.DataRow(row)
+
+    def commit(self, data_list):
+        query = 'INSERT INTO {} (date, duration, game_state, param1, param2, param3, param4)\nVALUES\n'.format(Database.TABLE_NAME)
+        for i, state in enumerate(data_list):
+            state_data = state.get_state_data()
+            data_row = Database.game_state_data_to_table_row(state_data)
+            query += data_row.insert_row_query()
+            if i < len(data_list) - 1:
+                query += ','
+            else:
+                query += ';'
+            query += "\n"
+
+        def on_insert_done(connection, result):
+            connection.commit()
+        self._execute_on_db(query=query, callback=on_insert_done)
 
 
 class HistoricStats:
@@ -385,17 +458,19 @@ class HistoricStats:
 
 class InGameTimeSpentMod(GameStates, Context):
     def __init__(self):
-        self._config = {
-
-        }
+        self._config = {}
         init_state = ClientLoadingState(self)
         self._state = init_state
         self._state_history_cache = set()
-        self._historic_stats = HistoricStats(Database().load_data())
+        self._database = Database()
+        self._historic_stats = HistoricStats(self._database.load_data())
 
     def dump(self):
         for state in self._state_history_cache:
             print(state)
+
+    def commit(self):
+        self._database.commit(self._state_history_cache)
 
     def set_state(self, state):
         self._state = state
@@ -417,6 +492,10 @@ class InGameTimeSpentMod(GameStates, Context):
 
     def on_exit(self):
         self._state.on_exit()
+        self.commit()
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.on_exit()
 
 
 def main():
