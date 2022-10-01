@@ -306,15 +306,18 @@ class Database:
 
     def _execute_on_db(self, query, callback=None):
         cursor, connection = self._connect()
+        is_ok = False
         try:
             print("DB: {}".format(query))
             result = cursor.execute(query)
             if callback:
                 callback(connection=connection, result=result)
+            is_ok = True
         except Exception as e:
             print("Database->_check_table(): Failed to fetch data from {}, msg: {}".format(self._file_name, e))
         finally:
             connection.close()
+        return is_ok
 
     def _check_table(self):
         is_table_exists = {
@@ -377,7 +380,7 @@ class Database:
 
         def on_insert_done(connection, result):
             connection.commit()
-        self._execute_on_db(query=query, callback=on_insert_done)
+        return self._execute_on_db(query=query, callback=on_insert_done)
 
 
 class HistoricStats:
@@ -466,11 +469,16 @@ class InGameTimeSpentMod(GameStates, Context):
         self._historic_stats = HistoricStats(self._database.load_data())
 
     def dump(self):
+        print("+====== dump start =====+")
         for state in self._state_history_cache:
-            print(state)
+            print("\t" + str(state))
+        print("+====== dump end =====+")
 
     def commit(self):
-        self._database.commit(self._state_history_cache)
+        if not self._database.commit(self._state_history_cache):
+            print("ERROR: Failed to commit!")
+            return
+        self._state_history_cache = []
 
     def set_state(self, state):
         self._state = state
@@ -506,8 +514,8 @@ def main():
     ingame_mod.on_lobby_loaded()
     ingame_mod.on_arena_loaded()
     ingame_mod.on_lobby_loaded()
-    ingame_mod.on_exit()
     ingame_mod.dump()
+    ingame_mod.on_exit()
 
     print(ingame_mod._historic_stats.all_time_avg_time_spent)
     print(ingame_mod._historic_stats.all_time_avg_game_loading)
