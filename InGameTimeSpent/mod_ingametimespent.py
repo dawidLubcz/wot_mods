@@ -127,10 +127,10 @@ class Context:
 class StateData:
     """Dataclass for keeping state params together"""
 
-    def __init__(self):
-        self._start_timestamp = 0
-        self._stop_timestamp = 0
-        self._state_name = GameStates.Names.BASE
+    def __init__(self, start=0, stop=0, name=GameStates.Names.BASE):
+        self._start_timestamp = start
+        self._stop_timestamp = stop
+        self._state_name = name
 
     @property
     def start_timestamp(self):
@@ -195,7 +195,7 @@ class GameStateBase(GameStates, State):
     STATE_NAME = GameStates.Names.BASE
 
     def __init__(self, context):
-        self._state_data = StateData()
+        self._state_data = StateData(name=self.STATE_NAME)
         self._context = context
 
     def __repr__(self):
@@ -219,7 +219,6 @@ class GameStateBase(GameStates, State):
                 str(class_name), str(method_name)))
 
     def get_state_data(self):
-        self._state_data.state_name = self.STATE_NAME
         return self._state_data
 
     def save_to_cache(self):
@@ -347,6 +346,7 @@ class Database:
             self.param4 = table_row[7]
 
         def insert_row_query(self):
+            """Return string which will fit to INSERT command"""
             return '({}, {}, "{}", "{}", "{}", "{}", "{}")'.format(
                 self.date, self.duration, self.game_state,
                 self.param1, self.param2, self.param3, self.param4)
@@ -357,6 +357,7 @@ class Database:
 
         @staticmethod
         def create_query():
+            """Return create table query"""
             query = """CREATE TABLE {} (
                     wot_trace_id INTEGER PRIMARY KEY,
                     date TEXT NOT NULL,
@@ -474,8 +475,8 @@ class HistoricStats:
     """Class for calculating stats based on data
     fetched from the database"""
 
-    def __init__(self, data):
-        self._data = data
+    def __init__(self):
+        self._data = []
         self.all_time_avg_time_spent = 0
 
         self.all_time_avg_game_loading = 0
@@ -498,14 +499,19 @@ class HistoricStats:
 
         self.curr_month_avg_game_arena = 0
         self.curr_month_arena_counter = 0
-        self._calculate_stats()
+
+    def set_data(self, data):
+        """Set loaded items"""
+        self._data = data
 
     @staticmethod
     def _get_date(row_date):
         date = datetime.datetime.fromtimestamp(int(row_date) / 1000)
         return date
 
-    def _calculate_stats(self):
+    def calculate_stats(self):
+        """Calculate parameters"""
+
         for row in self._data:
             self.all_time_avg_time_spent += row.duration
             if row.game_state == Database.DataRow.STATE_LOADING:
@@ -563,9 +569,9 @@ class InGameTimeSpentMod(GameStates, Context):
         self._config = {}
         init_state = ClientLoadingState(self)
         self._state = init_state
-        self._state_history_cache = set()
+        self._state_history_cache = []
         self._database = Database()
-        self._historic_stats = HistoricStats(self._database.load_data())
+        self._historic_stats = HistoricStats()
 
     def dump(self):
         """Print states stored in the cache"""
@@ -574,6 +580,7 @@ class InGameTimeSpentMod(GameStates, Context):
         for state in self._state_history_cache:
             print("\t" + str(state))
         print("+====== dump end =====+")
+        return self._state_history_cache
 
     def commit(self):
         """Save cache to the database"""
@@ -589,7 +596,7 @@ class InGameTimeSpentMod(GameStates, Context):
 
     def save_state(self, state):
         """Save state to cache"""
-        self._state_history_cache.add(state)
+        self._state_history_cache.append(state)
 
     def on_client_started(self):
         self._state.on_client_started()
@@ -603,8 +610,13 @@ class InGameTimeSpentMod(GameStates, Context):
     def on_veh_destroyed(self):
         self._state.on_veh_destroyed()
 
+    def _load_data(self):
+        self._historic_stats.set_data(self._database.load_data())
+
     def get_historic_stats(self):
         """Get historic stats"""
+        self._load_data()
+        self._historic_stats.calculate_stats()
         return self._historic_stats
 
     def on_exit(self):
@@ -641,3 +653,120 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def test_mod_context_init_obj():
+    """Mod initial state test"""
+    ingame_mod = InGameTimeSpentMod()
+    ingame_mod.on_exit()
+    cache = ingame_mod.dump()
+    assert cache[0].STATE_NAME == GameStates.Names.CLIENT_LOADING
+
+
+def test_mod_context_states_lobby_loaded_state():
+    """Lobby loaded state test"""
+    ingame_mod = InGameTimeSpentMod()
+    ingame_mod.on_lobby_loaded()
+    ingame_mod.on_exit()
+    cache = ingame_mod.dump()
+    assert cache[0].STATE_NAME == GameStates.Names.CLIENT_LOADING
+    assert cache[1].STATE_NAME == GameStates.Names.LOBBY_LOADED
+
+
+def test_mod_context_states_arena_state():
+    """Arena loaded state test"""
+    ingame_mod = InGameTimeSpentMod()
+    ingame_mod.on_lobby_loaded()
+    ingame_mod.on_arena_loaded()
+    ingame_mod.on_exit()
+    cache = ingame_mod.dump()
+    assert cache[0].STATE_NAME == GameStates.Names.CLIENT_LOADING
+    assert cache[1].STATE_NAME == GameStates.Names.LOBBY_LOADED
+    assert cache[2].STATE_NAME == GameStates.Names.ARENA_LOADED
+
+
+def test_mod_context_states_arena_lobby():
+    """Transition arena -> lobby test"""
+    ingame_mod = InGameTimeSpentMod()
+    ingame_mod.on_lobby_loaded()
+    ingame_mod.on_arena_loaded()
+    ingame_mod.on_lobby_loaded()
+    ingame_mod.on_exit()
+    cache = ingame_mod.dump()
+    assert cache[0].STATE_NAME == GameStates.Names.CLIENT_LOADING
+    assert cache[1].STATE_NAME == GameStates.Names.LOBBY_LOADED
+    assert cache[2].STATE_NAME == GameStates.Names.ARENA_LOADED
+    assert cache[3].STATE_NAME == GameStates.Names.LOBBY_LOADED
+
+
+def test_mod_context_init_bad_state():
+    """Not allowed transitions test"""
+
+    ingame_mod = InGameTimeSpentMod()
+    exc_count = 0
+
+    ingame_mod.on_client_started()
+
+    try:
+        ingame_mod.on_arena_loaded()
+    except BadStateException:
+        exc_count += 1
+
+    ingame_mod.on_lobby_loaded()
+
+    try:
+        ingame_mod.on_client_started()
+    except BadStateException:
+        exc_count += 1
+
+    ingame_mod.on_arena_loaded()
+
+    try:
+        ingame_mod.on_client_started()
+    except BadStateException:
+        exc_count += 1
+
+    assert exc_count == 3
+
+
+class DatabaseMock:
+    """Test class for database operations"""
+
+    def __init__(self, file_name="database.db"):
+        self.data = []
+
+    def load_data(self):
+        """Load prepared data"""
+        return self.data
+
+    def commit(self, data_list):
+        """Save given list of items to the fake database."""
+        for item in data_list:
+            self.data.append(item)
+        return True
+
+
+def test_mod_context_on_exit_database_push():
+    """Check if data will be pushed to the database"""
+    ingame_mod = InGameTimeSpentMod()
+    database_mock = DatabaseMock()
+    ingame_mod._database = database_mock
+    ingame_mod.on_exit()
+
+    assert len(database_mock.data) == 1
+    assert database_mock.data[0].STATE_NAME == GameStates.Names.CLIENT_LOADING
+
+
+def test_mod_context_on_exit_database_load():
+    """Check if data will be loaded from the database"""
+    ingame_mod = InGameTimeSpentMod()
+    database_mock = DatabaseMock()
+    timestamp = int(time.time() * 1000)
+    test_item = Database.DataRow([1, timestamp, 1000, "test", "", "", "", ""])
+    database_mock.data.append(test_item)
+    ingame_mod._database = database_mock
+    stats = ingame_mod.get_historic_stats()
+    ingame_mod.on_exit()
+
+    assert len(database_mock.data) == 2
+    assert stats.all_time_avg_time_spent == 1000.0
