@@ -8,15 +8,22 @@ __doc__ = """
     Data is stored locally on sqlite3 database.
 """
 
+import os.path
 import sqlite3
 import time
 import datetime
+import json
 
+
+is_wot_runtime = True
 try:
     import Avatar
     from gui.Scaleform.daapi.view.battle.shared.minimap.plugins import ArenaVehiclesPlugin
     from messenger import MessengerEntry
+    from states.StateInBattle import StateInBattle
+    from states.StateInGarage import StateInGarage
 except ImportError:
+    is_wot_runtime = False
     print("Could not import world of tanks modules")
 
 
@@ -326,149 +333,103 @@ class ClientLoadingState(GameStateBase):
 
 
 class Database:
-    """Class for database operations"""
-
-    class DataRow:
-        """Class for defining database table"""
-
-        STATE_LOADING = 'LOADING'
-        STATE_LOBBY = 'LOBBY'
-        STATE_ARENA = 'ARENA'
-
-        def __init__(self, table_row):
-            self.wot_trace_id = table_row[0]
-            self.date = str(table_row[1]).encode('utf-8')
-            self.duration = table_row[2]
-            self.game_state = str(table_row[3]).encode('utf-8')
-            self.param1 = table_row[4]
-            self.param2 = table_row[5]
-            self.param3 = table_row[6]
-            self.param4 = table_row[7]
-
-        def insert_row_query(self):
-            """Return string which will fit to INSERT command"""
-            return '({}, {}, "{}", "{}", "{}", "{}", "{}")'.format(
-                self.date, self.duration, self.game_state,
-                self.param1, self.param2, self.param3, self.param4)
-
-        def __repr__(self):
-            return "{}/{}/{}/{}".format(
-                self.wot_trace_id, self.date, self.game_state, self.duration)
-
-        @staticmethod
-        def create_query():
-            """Return create table query"""
-            query = """CREATE TABLE {} (
-                    wot_trace_id INTEGER PRIMARY KEY,
-                    date TEXT NOT NULL,
-                    duration REAL NOT NULL,
-                    game_state TEXT NOT NULL,
-                    param1 TEXT,
-                    param2 TEXT,
-                    param3 TEXT,
-                    param4 TEXT
-                    )
-                    """.format(Database.TABLE_NAME)
-            return query
-
-    TABLE_NAME = "WOT_GAME_TIME"
-
-    def __init__(self, file_name="database.db"):
-        self._file_name = file_name
-        self._fresh_database = not self._check_table()
-
-    def _connect(self):
-        connection = sqlite3.connect(self._file_name)
-        cursor = connection.cursor()
-        return cursor, connection
-
-    def _execute_on_db(self, query, callback=None):
-        cursor, connection = self._connect()
-        is_ok = False
-        try:
-            print("DB: {}".format(query))
-            result = cursor.execute(query)
-            if callback:
-                callback(connection=connection, result=result)
-            is_ok = True
-        except Exception as e:
-            print("Database->_check_table(): Failed to fetch data from {}, msg: {}".format(
-                self._file_name, e))
-        finally:
-            connection.close()
-        return is_ok
-
-    def _check_table(self):
-        is_table_exists = {
-            'result': False
-        }
-
-        def on_result_ready(connection, result):
-            if result.fetchone() is not None:
-                is_table_exists['result'] = True
-
-        self._execute_on_db(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='{}';".format(
-                Database.TABLE_NAME),
-            on_result_ready
-        )
-        return is_table_exists['result']
-
-    def _create_wot_table(self):
-        query = Database.DataRow.create_query()
-        self._execute_on_db(query, None)
+    """Database wrapper interface"""
 
     def load_data(self):
-        """Load historical data, if no table found create new"""
+        """Load stored data"""
+        raise NotImplementedError()
 
-        if self._fresh_database:
-            self._create_wot_table()
-            return []
+    def commit(self, data):
+        """Save data do persistent memory"""
+        raise NotImplementedError()
 
-        query = "SELECT * FROM {}".format(Database.TABLE_NAME)
-        data = []
 
-        def data_ready(connection, result):
-            fetch = result.fetchall()
-            for row in fetch:
-                data.append(Database.DataRow(row))
+class JsonDb:
+    def __init__(self, file_name):
+        self._file_name = file_name
 
-        self._execute_on_db(query, data_ready)
-        return data
+    def _create_if_not_exist(self):
+        if not os.path.isfile(self._file_name):
+            with open(self._file_name, 'a') as fp:
+                fp.write('{}')
 
-    @staticmethod
-    def _game_state_data_to_table_row(game_state_data):
-        row = [-1,
-               game_state_data.start_timestamp,
-               game_state_data.stop_timestamp - game_state_data.start_timestamp,
-               game_state_data.state_name,
-               "param1",
-               "param2",
-               "param3",
-               "param4"
-               ]
-        return Database.DataRow(row)
-
-    def commit(self, data_list):
-        """Save given list of items to the database."""
-
-        query = 'INSERT INTO {} (date, duration, game_state,' \
-                ' param1, param2, param3, param4)\nVALUES\n'.format(
-                Database.TABLE_NAME)
-        for i, state in enumerate(data_list):
-            state_data = state.get_state_data()
-            data_row = Database._game_state_data_to_table_row(state_data)
-            query += data_row.insert_row_query()
-            if i < len(data_list) - 1:
-                query += ','
+    def load(self, table_name):
+        self._create_if_not_exist()
+        with open(self._file_name, 'r') as fp:
+            content = json.load(fp)
+            if table_name in content:
+                results = []
+                for row in content[table_name]:
+                    results.append(
+                        SimpleDiscCache.DataRow.from_db_type(row)
+                    )
+                return results
             else:
-                query += ';'
-            query += "\n"
+                return []
 
-        def on_insert_done(connection, result):
-            connection.commit()
+    def commit(self, table_name, data):
+        self._create_if_not_exist()
+        content = None
+        with open(self._file_name, 'r') as fp:
+            content = json.load(fp)
+            if table_name not in content:
+                content[table_name] = []
+            for data_item in data:
+                print("JsonDb: commit item: {}".format(data_item))
+                data_row = SimpleDiscCache.DataRow.from_state(data_item)
+                content[table_name].append(
+                    SimpleDiscCache.DataRow.to_db_type(data_row)
+                )
+        if content:
+            with open(self._file_name, 'w') as fp:
+                json.dump(content, fp, indent=4)
+        return True
 
-        return self._execute_on_db(query=query, callback=on_insert_done)
+
+class SimpleDiscCache(Database):
+    TABLE_NAME = "WOT_GAME_TIME"
+
+    class DataRow:
+        """Class for defining database table row"""
+
+        def __init__(self):
+            self.date = ""
+            self.duration = 0
+            self.game_state = ""
+
+        @staticmethod
+        def from_db_type(db_type):
+            data_row = SimpleDiscCache.DataRow()
+            data_row.date = db_type["date"]
+            data_row.duration = db_type["duration"]
+            data_row.game_state = db_type["game_state"]
+            return data_row
+
+        @staticmethod
+        def from_state(state):
+            data_row = SimpleDiscCache.DataRow()
+            state_data = state.get_state_data()
+            data_row.date = state_data.start_timestamp
+            data_row.duration = state_data.stop_timestamp - state_data.start_timestamp
+            data_row.game_state = state_data.state_name
+            return data_row
+
+        @staticmethod
+        def to_db_type(data_row):
+            return {
+                "date": data_row.date,
+                "duration": data_row.duration,
+                "game_state": data_row.game_state
+            }
+
+    def __init__(self, file_name="mod_ingametimespent_database.json"):
+        self._db = JsonDb(file_name)
+
+    def load_data(self):
+        return self._db.load(SimpleDiscCache.TABLE_NAME)
+
+    def commit(self, data):
+        return self._db.commit(SimpleDiscCache.TABLE_NAME, data)
 
 
 class HistoricStats:
@@ -514,13 +475,13 @@ class HistoricStats:
 
         for row in self._data:
             self.all_time_avg_time_spent += row.duration
-            if row.game_state == Database.DataRow.STATE_LOADING:
+            if row.game_state == DatabaseSqlite3.DataRow.STATE_LOADING:
                 self.all_time_avg_game_loading += row.duration
                 self.all_time_loading_counter += 1
-            if row.game_state == Database.DataRow.STATE_LOBBY:
+            if row.game_state == DatabaseSqlite3.DataRow.STATE_LOBBY:
                 self.all_time_avg_game_lobby += row.duration
                 self.all_time_lobby_counter += 1
-            if row.game_state == Database.DataRow.STATE_ARENA:
+            if row.game_state == DatabaseSqlite3.DataRow.STATE_ARENA:
                 self.all_time_avg_game_arena += row.duration
                 self.all_time_arena_counter += 1
             date = HistoricStats._get_date(row.date)
@@ -528,13 +489,13 @@ class HistoricStats:
                     date.month == datetime.datetime.now().month:
                 self.curr_month_avg_time_spent += row.duration
                 self.curr_month_counter += 1
-                if row.game_state == Database.DataRow.STATE_LOADING:
+                if row.game_state == DatabaseSqlite3.DataRow.STATE_LOADING:
                     self.curr_month_avg_game_loading += row.duration
                     self.curr_month_loading_counter += 1
-                if row.game_state == Database.DataRow.STATE_LOBBY:
+                if row.game_state == DatabaseSqlite3.DataRow.STATE_LOBBY:
                     self.curr_month_avg_game_lobby += row.duration
                     self.curr_month_lobby_counter += 1
-                if row.game_state == Database.DataRow.STATE_ARENA:
+                if row.game_state == DatabaseSqlite3.DataRow.STATE_ARENA:
                     self.curr_month_avg_game_arena += row.duration
                     self.curr_month_arena_counter += 1
         if len(self._data) > 0:
@@ -570,7 +531,7 @@ class InGameTimeSpentMod(GameStates, Context):
         init_state = ClientLoadingState(self)
         self._state = init_state
         self._state_history_cache = []
-        self._database = Database()
+        self._database = SimpleDiscCache()
         self._historic_stats = HistoricStats()
 
     def dump(self):
@@ -626,6 +587,21 @@ class InGameTimeSpentMod(GameStates, Context):
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.on_exit()
+
+
+g_mod = InGameTimeSpentMod()
+
+if is_wot_runtime:
+# Game overwritten methods
+    @Hook(StateInGarage, 'activate')
+    def state_in_battle_activated(*args):
+        """Register for a showTracer method."""
+        g_mod.on_lobby_loaded()
+
+    @Hook(StateInBattle, 'activate')
+    def state_in_battle_activated(*args):
+        """Register for a showTracer method."""
+        g_mod.on_arena_loaded()
 
 
 def main():
@@ -762,7 +738,7 @@ def test_mod_context_on_exit_database_load():
     ingame_mod = InGameTimeSpentMod()
     database_mock = DatabaseMock()
     timestamp = int(time.time() * 1000)
-    test_item = Database.DataRow([1, timestamp, 1000, "test", "", "", "", ""])
+    test_item = DatabaseSqlite3.DataRow([1, timestamp, 1000, "test", "", "", "", ""])
     database_mock.data.append(test_item)
     ingame_mod._database = database_mock
     stats = ingame_mod.get_historic_stats()
