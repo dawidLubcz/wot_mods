@@ -9,7 +9,7 @@ __doc__ = """
 """
 
 import os.path
-import sqlite3
+import shutil
 import time
 import datetime
 import json
@@ -345,52 +345,74 @@ class Database:
 
 
 class JsonDb:
+    """Simple db to store data in a json file"""
+
     def __init__(self, file_name):
         self._file_name = file_name
+        self._backup_file_name = file_name + '.backup'
 
     def _create_if_not_exist(self):
         if not os.path.isfile(self._file_name):
-            with open(self._file_name, 'a') as fp:
-                fp.write('{}')
+            with open(self._file_name, 'a', encoding='utf-8') as file_object:
+                file_object.write('{}')
 
     def load(self, table_name):
+        """Load data from json file"""
+
         self._create_if_not_exist()
-        with open(self._file_name, 'r') as fp:
-            content = json.load(fp)
+        with open(self._file_name, 'r', encoding='utf-8') as file_object:
+            content = json.load(file_object)
+            results = []
             if table_name in content:
-                results = []
                 for row in content[table_name]:
                     results.append(
                         SimpleDiscCache.DataRow.from_db_type(row)
                     )
-                return results
-            else:
-                return []
+            return results
+
+    def _save_backup(self):
+        shutil.copy2(self._file_name, self._backup_file_name)
+
+    def _restore_from_backup(self):
+        shutil.copy2(self._backup_file_name, self._file_name)
 
     def commit(self, table_name, data):
+        """Save data to json file"""
+
         self._create_if_not_exist()
+        self._save_backup()
         content = None
-        with open(self._file_name, 'r') as fp:
-            content = json.load(fp)
-            if table_name not in content:
-                content[table_name] = []
-            for data_item in data:
-                print("JsonDb: commit item: {}".format(data_item))
-                data_row = SimpleDiscCache.DataRow.from_state(data_item)
-                content[table_name].append(
-                    SimpleDiscCache.DataRow.to_db_type(data_row)
-                )
-        if content:
-            with open(self._file_name, 'w') as fp:
-                json.dump(content, fp, indent=4)
+        try:
+            with open(self._file_name, 'r', encoding='utf-8') as file_object:
+                content = json.load(file_object)
+                if table_name not in content:
+                    content[table_name] = []
+                for data_item in data:
+                    print("JsonDb: commit item: {}".format(data_item))
+                    data_row = SimpleDiscCache.DataRow.from_state(data_item)
+                    content[table_name].append(
+                        SimpleDiscCache.DataRow.to_db_type(data_row)
+                    )
+            if content:
+                with open(self._file_name, 'w', encoding='utf-8') as file_object:
+                    json.dump(content, file_object, indent=4)
+                    self._save_backup()
+        except:
+            self._restore_from_backup()
         return True
 
 
 class SimpleDiscCache(Database):
+    """Wrapper for json database"""
+
     TABLE_NAME = "WOT_GAME_TIME"
 
     class DataRow:
         """Class for defining database table row"""
+
+        STATE_LOADING = 'LOADING'
+        STATE_LOBBY = 'LOBBY'
+        STATE_ARENA = 'ARENA'
 
         def __init__(self):
             self.date = ""
@@ -399,6 +421,7 @@ class SimpleDiscCache(Database):
 
         @staticmethod
         def from_db_type(db_type):
+            """Create DataRow object from database type"""
             data_row = SimpleDiscCache.DataRow()
             data_row.date = db_type["date"]
             data_row.duration = db_type["duration"]
@@ -407,6 +430,7 @@ class SimpleDiscCache(Database):
 
         @staticmethod
         def from_state(state):
+            """Create DataRow object from state type"""
             data_row = SimpleDiscCache.DataRow()
             state_data = state.get_state_data()
             data_row.date = state_data.start_timestamp
@@ -416,6 +440,7 @@ class SimpleDiscCache(Database):
 
         @staticmethod
         def to_db_type(data_row):
+            """Save database type object based on DataRow"""
             return {
                 "date": data_row.date,
                 "duration": data_row.duration,
@@ -426,9 +451,11 @@ class SimpleDiscCache(Database):
         self._db = JsonDb(file_name)
 
     def load_data(self):
+        """Load data from db"""
         return self._db.load(SimpleDiscCache.TABLE_NAME)
 
     def commit(self, data):
+        """Save data to db"""
         return self._db.commit(SimpleDiscCache.TABLE_NAME, data)
 
 
@@ -475,13 +502,13 @@ class HistoricStats:
 
         for row in self._data:
             self.all_time_avg_time_spent += row.duration
-            if row.game_state == DatabaseSqlite3.DataRow.STATE_LOADING:
+            if row.game_state == SimpleDiscCache.DataRow.STATE_LOADING:
                 self.all_time_avg_game_loading += row.duration
                 self.all_time_loading_counter += 1
-            if row.game_state == DatabaseSqlite3.DataRow.STATE_LOBBY:
+            if row.game_state == SimpleDiscCache.DataRow.STATE_LOBBY:
                 self.all_time_avg_game_lobby += row.duration
                 self.all_time_lobby_counter += 1
-            if row.game_state == DatabaseSqlite3.DataRow.STATE_ARENA:
+            if row.game_state == SimpleDiscCache.DataRow.STATE_ARENA:
                 self.all_time_avg_game_arena += row.duration
                 self.all_time_arena_counter += 1
             date = HistoricStats._get_date(row.date)
@@ -489,13 +516,13 @@ class HistoricStats:
                     date.month == datetime.datetime.now().month:
                 self.curr_month_avg_time_spent += row.duration
                 self.curr_month_counter += 1
-                if row.game_state == DatabaseSqlite3.DataRow.STATE_LOADING:
+                if row.game_state == SimpleDiscCache.DataRow.STATE_LOADING:
                     self.curr_month_avg_game_loading += row.duration
                     self.curr_month_loading_counter += 1
-                if row.game_state == DatabaseSqlite3.DataRow.STATE_LOBBY:
+                if row.game_state == SimpleDiscCache.DataRow.STATE_LOBBY:
                     self.curr_month_avg_game_lobby += row.duration
                     self.curr_month_lobby_counter += 1
-                if row.game_state == DatabaseSqlite3.DataRow.STATE_ARENA:
+                if row.game_state == SimpleDiscCache.DataRow.STATE_ARENA:
                     self.curr_month_avg_game_arena += row.duration
                     self.curr_month_arena_counter += 1
         if len(self._data) > 0:
@@ -549,6 +576,7 @@ class InGameTimeSpentMod(GameStates, Context):
         if not self._database.commit(self._state_history_cache):
             print("ERROR: Failed to commit!")
             return
+        print("Clear cache")
         self._state_history_cache = []
 
     def set_state(self, state):
@@ -594,7 +622,7 @@ g_mod = InGameTimeSpentMod()
 if is_wot_runtime:
 # Game overwritten methods
     @Hook(StateInGarage, 'activate')
-    def state_in_battle_activated(*args):
+    def state_in_garage_activated(*args):
         """Register for a showTracer method."""
         g_mod.on_lobby_loaded()
 
@@ -604,49 +632,27 @@ if is_wot_runtime:
         g_mod.on_arena_loaded()
 
 
-def main():
-    """Entry function for running the script standalone"""
-
-    ingame_mod = InGameTimeSpentMod()
-    ingame_mod.on_client_started()
-    ingame_mod.on_lobby_loaded()
-    ingame_mod.on_arena_loaded()
-    ingame_mod.on_lobby_loaded()
-    ingame_mod.on_arena_loaded()
-    ingame_mod.on_lobby_loaded()
-    ingame_mod.dump()
-    ingame_mod.on_exit()
-
-    print(ingame_mod.get_historic_stats().all_time_avg_time_spent)
-    print(ingame_mod.get_historic_stats().all_time_avg_game_loading)
-    print(ingame_mod.get_historic_stats().all_time_avg_game_lobby)
-    print(ingame_mod.get_historic_stats().all_time_avg_game_arena)
-    print(ingame_mod.get_historic_stats().curr_month_avg_time_spent)
-    print(ingame_mod.get_historic_stats().curr_month_avg_game_loading)
-    print(ingame_mod.get_historic_stats().curr_month_avg_game_lobby)
-    print(ingame_mod.get_historic_stats().curr_month_avg_game_arena)
-
-
-if __name__ == "__main__":
-    main()
-
-
 def test_mod_context_init_obj():
     """Mod initial state test"""
     ingame_mod = InGameTimeSpentMod()
+    assert ingame_mod._state.STATE_NAME == GameStates.Names.CLIENT_LOADING
     ingame_mod.on_exit()
     cache = ingame_mod.dump()
-    assert cache[0].STATE_NAME == GameStates.Names.CLIENT_LOADING
+    assert len(cache) == 0
 
 
 def test_mod_context_states_lobby_loaded_state():
     """Lobby loaded state test"""
     ingame_mod = InGameTimeSpentMod()
     ingame_mod.on_lobby_loaded()
-    ingame_mod.on_exit()
+
     cache = ingame_mod.dump()
     assert cache[0].STATE_NAME == GameStates.Names.CLIENT_LOADING
-    assert cache[1].STATE_NAME == GameStates.Names.LOBBY_LOADED
+    assert ingame_mod._state.STATE_NAME == GameStates.Names.LOBBY_LOADED
+    ingame_mod.on_exit()
+
+    cache = ingame_mod.dump()
+    assert len(cache) == 0
 
 
 def test_mod_context_states_arena_state():
@@ -654,11 +660,11 @@ def test_mod_context_states_arena_state():
     ingame_mod = InGameTimeSpentMod()
     ingame_mod.on_lobby_loaded()
     ingame_mod.on_arena_loaded()
-    ingame_mod.on_exit()
     cache = ingame_mod.dump()
     assert cache[0].STATE_NAME == GameStates.Names.CLIENT_LOADING
     assert cache[1].STATE_NAME == GameStates.Names.LOBBY_LOADED
-    assert cache[2].STATE_NAME == GameStates.Names.ARENA_LOADED
+    assert ingame_mod._state.STATE_NAME == GameStates.Names.ARENA_LOADED
+    ingame_mod.on_exit()
 
 
 def test_mod_context_states_arena_lobby():
@@ -667,12 +673,12 @@ def test_mod_context_states_arena_lobby():
     ingame_mod.on_lobby_loaded()
     ingame_mod.on_arena_loaded()
     ingame_mod.on_lobby_loaded()
-    ingame_mod.on_exit()
     cache = ingame_mod.dump()
     assert cache[0].STATE_NAME == GameStates.Names.CLIENT_LOADING
     assert cache[1].STATE_NAME == GameStates.Names.LOBBY_LOADED
     assert cache[2].STATE_NAME == GameStates.Names.ARENA_LOADED
-    assert cache[3].STATE_NAME == GameStates.Names.LOBBY_LOADED
+    assert ingame_mod._state.STATE_NAME == GameStates.Names.LOBBY_LOADED
+    ingame_mod.on_exit()
 
 
 def test_mod_context_init_bad_state():
@@ -738,7 +744,13 @@ def test_mod_context_on_exit_database_load():
     ingame_mod = InGameTimeSpentMod()
     database_mock = DatabaseMock()
     timestamp = int(time.time() * 1000)
-    test_item = DatabaseSqlite3.DataRow([1, timestamp, 1000, "test", "", "", "", ""])
+
+    item_dict = {
+        "date": timestamp,
+        "duration": 1000,
+        "game_state": GameStates.Names.LOBBY_LOADED
+    }
+    test_item = SimpleDiscCache.DataRow.from_db_type(item_dict)
     database_mock.data.append(test_item)
     ingame_mod._database = database_mock
     stats = ingame_mod.get_historic_stats()
@@ -746,3 +758,27 @@ def test_mod_context_on_exit_database_load():
 
     assert len(database_mock.data) == 2
     assert stats.all_time_avg_time_spent == 1000.0
+
+
+def testall():
+    """Run test functions"""
+
+    import inspect
+    import sys
+
+    test_functions = [obj for name, obj in inspect.getmembers(sys.modules[__name__])
+                      if (inspect.isfunction(obj) and
+                          name.startswith('test') and name != 'testall')]
+
+    for i, test_function in enumerate(test_functions):
+        print("{}/{}. Run test function: {}".format(i + 1, len(test_functions), str(test_function)))
+        test_function()
+
+
+def main():
+    """Entry function for running the script standalone"""
+    testall()
+
+
+if __name__ == "__main__":
+    main()
