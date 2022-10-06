@@ -5,7 +5,7 @@ __doc__ = """
     * game lobby
     * battle
     
-    Data is stored locally on sqlite3 database.
+    Data is stored locally on json file.
 """
 
 import os.path
