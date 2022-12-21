@@ -17,14 +17,12 @@ import json
 
 is_wot_runtime = True
 try:
-    import Avatar
+    from Avatar import PlayerAvatar
     from gui.Scaleform.daapi.view.battle.shared.minimap.plugins import ArenaVehiclesPlugin
     from messenger import MessengerEntry
-    from states.StateInBattle import StateInBattle
-    from states.StateInGarage import StateInGarage
-except ImportError:
+except ImportError as e:
     is_wot_runtime = False
-    print("Could not import world of tanks modules")
+    print("InGameTimeSpentMod Could not import world of tanks modules: {}".format(e))
 
 
 class Hook:
@@ -353,14 +351,14 @@ class JsonDb:
 
     def _create_if_not_exist(self):
         if not os.path.isfile(self._file_name):
-            with open(self._file_name, 'a', encoding='utf-8') as file_object:
-                file_object.write('{}')
+            with open(self._file_name, 'a') as file_object:
+                file_object.write('{}'.encode("UTF-8"))
 
     def load(self, table_name):
         """Load data from json file"""
 
         self._create_if_not_exist()
-        with open(self._file_name, 'r', encoding='utf-8') as file_object:
+        with open(self._file_name, 'r') as file_object:
             content = json.load(file_object)
             results = []
             if table_name in content:
@@ -383,18 +381,18 @@ class JsonDb:
         self._save_backup()
         content = None
         try:
-            with open(self._file_name, 'r', encoding='utf-8') as file_object:
+            with open(self._file_name, 'r') as file_object:
                 content = json.load(file_object)
                 if table_name not in content:
                     content[table_name] = []
                 for data_item in data:
-                    print("JsonDb: commit item: {}".format(data_item))
+                    print("InGameTimeSpentMod: JsonDb commit item: {}".format(data_item))
                     data_row = SimpleDiscCache.DataRow.from_state(data_item)
                     content[table_name].append(
                         SimpleDiscCache.DataRow.to_db_type(data_row)
                     )
             if content:
-                with open(self._file_name, 'w', encoding='utf-8') as file_object:
+                with open(self._file_name, 'w') as file_object:
                     json.dump(content, file_object, indent=4)
                     self._save_backup()
         except:
@@ -560,6 +558,7 @@ class InGameTimeSpentMod(GameStates, Context):
         self._state_history_cache = []
         self._database = SimpleDiscCache()
         self._historic_stats = HistoricStats()
+        print("InGameTimeSpentMod created")
 
     def dump(self):
         """Print states stored in the cache"""
@@ -612,24 +611,49 @@ class InGameTimeSpentMod(GameStates, Context):
         """Should be called on the game exit to save current state"""
         self._state.on_exit()
         self.commit()
+        print("InGameTimeSpentMod data saved to database")
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.on_exit()
 
 
 g_mod = InGameTimeSpentMod()
+g_mod.on_client_started()
 
 if is_wot_runtime:
+    print("InGameTimeSpentMod set hooks")
 # Game overwritten methods
-    @Hook(StateInGarage, 'activate')
+    @Hook(PlayerAvatar, 'onBecomePlayer')
     def state_in_garage_activated(*args):
-        """Register for a showTracer method."""
-        g_mod.on_lobby_loaded()
+        print("InGameTimeSpentMod state_in_garage_activated")
+        try:
+            g_mod.on_lobby_loaded()
+        except BadStateException as e:
+            print("InGameTimeSpentMod", str(e))
 
-    @Hook(StateInBattle, 'activate')
+    @Hook(PlayerAvatar, 'onEnterWorld')
     def state_in_battle_activated(*args):
-        """Register for a showTracer method."""
-        g_mod.on_arena_loaded()
+        print("InGameTimeSpentMod state_in_battle_activated")
+        try:
+            g_mod.on_arena_loaded()
+        except BadStateException as e:
+            print("InGameTimeSpentMod", str(e))
+
+    @Hook(PlayerAvatar, 'leaveArena')
+    def state_in_battle_activated(*args):
+        print("InGameTimeSpentMod state_leaveArena activated")
+        try:
+            g_mod.on_veh_destroyed()
+        except BadStateException as e:
+            print("InGameTimeSpentMod", str(e))
+
+    @Hook(PlayerAvatar, 'onBecomeNonPlayer')
+    def state_in_battle_activated(*args):
+        print("InGameTimeSpentMod state_exit activated")
+        try:
+            g_mod.on_exit()
+        except BadStateException as e:
+            print("InGameTimeSpentMod", str(e))
 
 
 def test_mod_context_init_obj():
