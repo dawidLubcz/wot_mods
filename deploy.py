@@ -63,6 +63,8 @@ class ModDeploy:
         version_dir = versions[0][2]
         deploy_path = version_dir / config['client_mod_path']
 
+        if not os.path.exists(deploy_path):
+            os.makedirs(deploy_path)
         shutil.copy2(pyc_file, deploy_path)
         print(f"Pyc file deployed: {pyc_file} -> {deploy_path}")
 
