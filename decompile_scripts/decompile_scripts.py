@@ -104,8 +104,17 @@ class WotDecompiler:
                     failed_to_decompile.append(file)
                 done_count += 1
                 sys.stdout.write(f"\r{done_count}/{len(files)} - {done_count / len(files) * 100:.2f}%")
+        sys.stdout.write('\n')
         sys.stdout.flush()
         return failed_to_decompile
+
+    def _save_fails_to_file(self, file_failed_to_decompile: list, file_name: str = 'failed.log') -> None:
+        path = Path(os.getcwd()) / '.tmp'
+        path.mkdir(parents=True, exist_ok=True)
+        with open(str(path / file_name), 'w') as f:
+            for failed_item in file_failed_to_decompile:
+                f.write(f"{Path(self._game_path) / failed_item}\n")
+            print(f"Fails saved to file: {str(path / file_name)}")
 
     def decompile(self):
         """
@@ -117,13 +126,15 @@ class WotDecompiler:
         previous_location = os.getcwd()
         os.chdir(self._game_path)
 
+        failed_to_decompile = []
         try:
             WotDecompiler._unzip_file_scripts()
             files = WotDecompiler._find_pyc_files()
             print(f"decompile: Found {len(files)} files")
-            WotDecompiler._decompile_files(files=files)
+            failed_to_decompile = WotDecompiler._decompile_files(files=files)
         finally:
             os.chdir(previous_location)
+            self._save_fails_to_file(file_failed_to_decompile=failed_to_decompile)
 
 
 def main():
